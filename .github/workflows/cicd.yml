@@ -1,39 +1,59 @@
-name: CICD pipline
+name: CI/CD Pipeline
 
 on:
-  push: 
-    branches: ["main"]
+  push:
+    branches:
+      - main
 
 jobs:
   compile:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up JDK 17
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: 'maven'
-      -  name: Build with Maven
-         run: mvn -B package --file pom.xml 
+          distribution: temurin
+          java-version: 17
+          cache: maven
+
+      - name: Download Dependencies
+        run: mvn dependency:go-offline
+
+      - name: Build
+        run: mvn clean package
 
   security-check:
-      runs-on: ubuntu-latest
-      steps:
-        - uses: actions/checkout@v3
-        -  name: Trivy Scan
-           run: | 
-            sudo apt-get install wget gnupg
-            wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-            echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
-            sudo apt-get update
-            sudo apt-get install trivy
-        - name: Trivy FS scan
-          run: trivy fs --format table -o trivy-report.json .
+    needs: compile
+    runs-on: ubuntu-latest
 
-        - name: Gitleakes installation
-          run: sudo apt install gitlleaks -y
+    steps:
+      - uses: actions/checkout@v4
 
-        - name: Gitleaks scan
-          run: gitleaks detect --source . -r gitleaks-report.json -f json
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: maven
+
+      - name: Download Dependencies
+        run: mvn dependency:go-offline
+
+      - name: Run Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          format: table
+          output: trivy-report.txt
+
+      - name: Upload Trivy Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy-report.txt
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
