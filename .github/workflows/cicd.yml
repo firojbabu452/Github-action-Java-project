@@ -7,7 +7,7 @@ on:
 
 jobs:
   compile:
-    runs-on: runner-self-hosted
+    runs-on: self-hosted
 
     steps:
       - uses: actions/checkout@v4
@@ -16,7 +16,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: "17"
           cache: maven
 
       - name: Download Dependencies
@@ -25,9 +25,9 @@ jobs:
       - name: Build
         run: mvn clean package
 
-  security-check:
+  tests:
     needs: compile
-    runs-on: runner-self-hosted
+    runs-on: self-hosted
 
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +36,27 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: "17"
+          cache: maven
+
+      - name: Download Dependencies
+        run: mvn dependency:go-offline
+
+      - name: Run Unit Tests
+        run: mvn test
+
+  security-check:
+    needs: compile
+    runs-on: self-hosted
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
           cache: maven
 
       - name: Download Dependencies
