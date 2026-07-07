@@ -7,7 +7,7 @@ on:
 
 jobs:
   compile:
-    runs-on: self-hosted
+    runs-on: runner-self-hosted
 
     steps:
       - uses: actions/checkout@v4
@@ -23,11 +23,11 @@ jobs:
         run: mvn dependency:go-offline
 
       - name: Build
-        run: mvn clean package
+        run: mvn clean package -DskipTests
 
   tests:
     needs: compile
-    runs-on: self-hosted
+    runs-on: runner-self-hosted
 
     steps:
       - uses: actions/checkout@v4
@@ -46,8 +46,8 @@ jobs:
         run: mvn test
 
   security-check:
-    needs: compile
-    runs-on: self-hosted
+    needs: tests
+    runs-on: runner-self-hosted
 
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +62,7 @@ jobs:
       - name: Download Dependencies
         run: mvn dependency:go-offline
 
-      - name: Run Trivy
+      - name: Run Trivy Filesystem Scan
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
@@ -77,3 +77,42 @@ jobs:
 
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
+
+  sonar-scan:
+    needs: tests
+    runs-on: runner-self-hosted
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Download Dependencies
+        run: mvn dependency:go-offline
+
+      - name: Build Project
+        run: mvn clean verify
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  quality-gate:
+    needs: sonar-scan
+    runs-on: runner-self-hosted
+
+    steps:
+      - name: SonarQube Quality Gate Check
+        uses: SonarSource/sonarqube-quality-gate-action@v1.2.0
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
