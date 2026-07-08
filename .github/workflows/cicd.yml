@@ -1,107 +1,133 @@
-name: CI/CD Pipeline
+name: CICD Pipeline
+
 on:
   push:
-    branches:
-      - main
-permissions:
-  contents: read
+    branches: [ "main" ]
+
 env:
-  JAVA_VERSION: "17"
-  IMAGE_NAME: firojbabu452/bankapp
+  DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_USERNAME }}/bankapp
+
 jobs:
   compile:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Java
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
+          java-version: '17'
+          distribution: 'temurin'
           cache: maven
-      - name: Download Dependencies
-        run: mvn dependency:go-offline
-      - name: Build
-        run: mvn clean package -DskipTests
-      - name: Upload JAR artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-jar
-          path: target/*.jar
-          retention-days: 1
-  tests:
-    needs: compile
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-          cache: maven
-      - name: Download Dependencies
-        run: mvn dependency:go-offline
-      - name: Run Unit Tests
-        run: mvn test
+      - name: Build with Maven
+        run: mvn compile
+
   security-check:
-    needs: tests
     runs-on: self-hosted
+    needs: compile
     steps:
       - uses: actions/checkout@v4
-      - name: Run Trivy Filesystem Scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: fs
-          format: table
-          output: trivy-report.txt
-          severity: HIGH,CRITICAL
-          exit-code: "1"
+
+      - name: Trivy Installation
+        run: |
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update -y
+          sudo apt-get install -y trivy
+
+      - name: Trivy FS Scan
+        run: trivy fs --format table -o fs-report.txt .
+
       - name: Upload Trivy Report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: trivy-report
-          path: trivy-report.txt
-      - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  sonar-scan:
-    needs: tests
+          path: fs-report.txt
+
+      - name: Gitleaks Installation
+        run: |
+          GITLEAKS_VERSION=8.21.2
+          wget -q https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz
+          tar -xzf gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+          sudo chmod +x /usr/local/bin/gitleaks
+
+      - name: Gitleaks Code Scan
+        run: gitleaks detect -s . -r gitleaks-report.json -f json
+
+      - name: Upload Gitleaks Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks-report.json
+
+  test:
     runs-on: self-hosted
+    needs: security-check
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+      - name: Unit Test Cases
+        run: mvn test
+
+  build_project_and_sonar_scan:
+    runs-on: self-hosted
+    needs: test
     steps:
       - uses: actions/checkout@v4
         with:
+          # Disabling shallow clones is recommended for improving the relevancy of reporting
           fetch-depth: 0
-      - name: Setup Java
+
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
+          java-version: '17'
+          distribution: 'temurin'
           cache: maven
-      - name: Download Dependencies
-        run: mvn dependency:go-offline
+
+      - name: Build Project
+        run: mvn package -DskipTests
+
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: target/*.jar
+
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-      - name: SonarQube Quality Gate Check
-        uses: SonarSource/sonarqube-quality-gate-action@v1.2.0
-        timeout-minutes: 5
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+
+      - name: SonarQube Quality Gate check
+        id: sonarqube-quality-gate-check
+        uses: sonarsource/sonarqube-quality-gate-action@v1.2.0
+        with:
+          pollingTimeoutSec: 600
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+
   build_docker_image_and_push:
     runs-on: self-hosted
-    needs: [security-check, sonar-scan]
+    needs: build_project_and_sonar_scan
     steps:
       - uses: actions/checkout@v4
       - name: Download JAR artifact
         uses: actions/download-artifact@v4
         with:
           name: app-jar
-          path: app
+          path: app  # this will download JAR to ./app folder
+
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -117,8 +143,37 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.DOCKERHUB_IMAGE }}:latest
+            ${{ env.DOCKERHUB_IMAGE }}:${{ github.sha }}
           file: ./Dockerfile
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+
+  # deploy_to_kubernetes:
+  #   runs-on: self-hosted
+  #   needs: build_docker_image_and_push
+  #   steps:
+  #     - name: Checkout Code
+  #       uses: actions/checkout@v4
+  #     - name: Install AWS CLI
+  #       run: |
+  #         if ! command -v aws &> /dev/null; then
+  #           curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+  #           unzip -q awscliv2.zip
+  #           sudo ./aws/install --update
+  #         fi
+  #     - name: Configure AWS credentials
+  #       uses: aws-actions/configure-aws-credentials@v4
+  #       with:
+  #         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  #         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  #         aws-region: ap-south-1
+  #     - name: Set up kubectl
+  #       uses: azure/setup-kubectl@v4
+  #       with:
+  #         version: latest
+  #     - name: Configure kubeconfig
+  #       run: |
+  #         mkdir -p "$HOME/.kube"
+  #         echo "${{ secrets.EKS_KUBECONFIG }}" > "$HOME/.kube/config"
+  #         chmod 600 "$HOME/.kube/config"
+  #     - name: Deploy to EKS
+  #       run: kubectl apply -f ds.yml
